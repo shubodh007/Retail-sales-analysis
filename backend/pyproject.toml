@@ -1,0 +1,38 @@
+[project]
+name = "retail-intelligence-backend"
+version = "0.1.0"
+description = "Retail Intelligence API: CSV ingest, PySpark profiling, forecasting backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "python-multipart>=0.0.20",
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "pyspark==3.5.4",
+    "statsmodels>=0.14",
+    "prophet>=1.1",
+    "xgboost>=2.0",
+    "scikit-learn>=1.4",
+    "pgserver>=0.1",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.25"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.alembic]
+script_location = "alembic"
+
+[build-system]
+requires = ["setuptools"]
