@@ -39,9 +39,11 @@ JDBC_PROPS = {
 }
 
 
-def _jdbc(df, table: str, jdbc_url: str, user: str) -> int:
+def _jdbc(df, table: str, jdbc_url: str, pg: dict) -> int:
     props = dict(JDBC_PROPS)
-    props["user"] = user
+    props["user"] = pg["user"]
+    if pg.get("password"):
+        props["password"] = pg["password"]
     df.write.jdbc(jdbc_url, table, mode="append", properties=props)
     return df.count()
 
@@ -83,14 +85,14 @@ def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, 
         F.sum("__qty").alias("qty"), F.sum("revenue").alias("revenue"))
     counts["sales_daily"] = _jdbc(
         daily.select(did.alias("dataset_id"), F.col("d").alias("date"), "orders", "qty", "revenue"),
-        "sales_daily", jdbc_url, pg["user"])
+        "sales_daily", jdbc_url, pg)
 
     monthly = df.groupBy(F.date_trunc("month", "date").cast("date").alias("m")).agg(
         F.countDistinct(inv).alias("orders"),
         F.sum("__qty").alias("qty"), F.sum("revenue").alias("revenue"))
     counts["sales_monthly"] = _jdbc(
         monthly.select(did.alias("dataset_id"), F.col("m").alias("month"), "orders", "qty", "revenue"),
-        "sales_monthly", jdbc_url, pg["user"])
+        "sales_monthly", jdbc_url, pg)
 
     pday = df.groupBy(day.alias("d"), "__prod").agg(
         desc.alias("description"), F.sum("__qty").alias("qty"),
@@ -98,7 +100,7 @@ def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, 
     counts["product_daily"] = _jdbc(
         pday.select(did.alias("dataset_id"), F.col("d").alias("date"),
                     F.col("__prod").alias("stockcode"), "description", "qty", "revenue", "orders"),
-        "product_daily", jdbc_url, pg["user"])
+        "product_daily", jdbc_url, pg)
 
     psum = df.groupBy("__prod").agg(
         desc.alias("description"), F.sum("__qty").alias("qty"),
@@ -107,7 +109,7 @@ def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, 
     counts["product_summary"] = _jdbc(
         psum.select(did.alias("dataset_id"), F.col("__prod").alias("stockcode"), "description",
                     "qty", "revenue", "orders", "first_date", "last_date"),
-        "product_summary", jdbc_url, pg["user"])
+        "product_summary", jdbc_url, pg)
 
     if has_geo:
         cday = df.filter(F.col("__country").isNotNull() & (F.col("__country") != "")).groupBy(
@@ -117,7 +119,7 @@ def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, 
         counts["country_daily"] = _jdbc(
             cday.select(did.alias("dataset_id"), F.col("d").alias("date"),
                         F.col("__country").alias("country"), "qty", "revenue", "orders"),
-            "country_daily", jdbc_url, pg["user"])
+            "country_daily", jdbc_url, pg)
 
     if has_cust:
         cust = df.filter(F.col("__cust").isNotNull() & (F.col("__cust") != ""))
@@ -128,6 +130,6 @@ def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, 
         counts["customer_summary"] = _jdbc(
             csum.select(did.alias("dataset_id"), F.col("__cust").alias("customer_id"), "country",
                         "orders", "qty", "revenue", "first_date", "last_date"),
-            "customer_summary", jdbc_url, pg["user"])
+            "customer_summary", jdbc_url, pg)
 
     return counts

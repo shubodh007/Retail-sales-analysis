@@ -241,7 +241,10 @@ Frontend polls `GET /runs/{id}` (4 s) and renders the evidence table from
 Production guards added: slot in the same job gate as uploads (429 when
 full), `MAX_FORECAST_HORIZON` enforced (422 above the limit), single
 training of each requested model per group (no duplicate launches — the
-group row is the idempotency record the UI polls).
+group row is the idempotency record the UI polls). Identical completed
+requests reuse the existing group (cache hit, no retraining); in-flight
+duplicates attach to the running group. Non-ready datasets are rejected
+(422). Model workers are sequential by default (`FORECAST_MAX_WORKERS=1`).
 
 ## 16. Free-tier limitations
 

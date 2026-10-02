@@ -1,0 +1,154 @@
+{
+  "dataset": "d0793ce2-624c-465d-88ab-cb8018a2c489",
+  "stages": {
+    "load_global": 0.21,
+    "load_product_30": 0.08,
+    "load_country_30": 0.08,
+    "build_frame_once": 0.033,
+    "e2e_rf_7d": 8.3
+  },
+  "calls": [
+    {
+      "context": "global",
+      "horizon": 7,
+      "model": "arima",
+      "seconds": 8.1,
+      "ok": true,
+      "wape": 36.24689652028831,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 7,
+      "model": "prophet",
+      "seconds": 5.2,
+      "ok": true,
+      "wape": 30.635594442157263,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 7,
+      "model": "rf",
+      "seconds": 8.2,
+      "ok": true,
+      "wape": 34.419890498236136,
+      "frames_built": 29
+    },
+    {
+      "context": "global",
+      "horizon": 7,
+      "model": "xgb",
+      "seconds": 13.4,
+      "ok": true,
+      "wape": 35.68530576040341,
+      "frames_built": 29
+    },
+    {
+      "context": "global",
+      "horizon": 30,
+      "model": "arima",
+      "seconds": 4.2,
+      "ok": true,
+      "wape": 30.903277065810215,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 30,
+      "model": "prophet",
+      "seconds": 4.0,
+      "ok": true,
+      "wape": 43.1634458254788,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 30,
+      "model": "rf",
+      "seconds": 21.4,
+      "ok": true,
+      "wape": 39.79435926891555,
+      "frames_built": 121
+    },
+    {
+      "context": "global",
+      "horizon": 30,
+      "model": "xgb",
+      "seconds": 17.9,
+      "ok": true,
+      "wape": 38.68100848733692,
+      "frames_built": 121
+    },
+    {
+      "context": "global",
+      "horizon": 90,
+      "model": "arima",
+      "seconds": 3.1,
+      "ok": true,
+      "wape": 44.5910797657918,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 90,
+      "model": "prophet",
+      "seconds": 3.5,
+      "ok": true,
+      "wape": 50.66300620060716,
+      "frames_built": 0
+    },
+    {
+      "context": "global",
+      "horizon": 90,
+      "model": "rf",
+      "seconds": 55.2,
+      "ok": true,
+      "wape": 43.945678207628326,
+      "frames_built": 361
+    },
+    {
+      "context": "global",
+      "horizon": 90,
+      "model": "xgb",
+      "seconds": 30.6,
+      "ok": true,
+      "wape": 41.112845759274144,
+      "frames_built": 361
+    },
+    {
+      "context": "product",
+      "horizon": 30,
+      "model": "rf",
+      "seconds": 20.0,
+      "ok": true,
+      "wape": 276.55412756900284,
+      "frames_built": 121
+    },
+    {
+      "context": "country",
+      "horizon": 30,
+      "model": "rf",
+      "seconds": 20.3,
+      "ok": true,
+      "wape": 44.85729950208576,
+      "frames_built": 121
+    }
+  ],
+  "global_points": 604,
+  "product_ctx": "M",
+  "country_ctx": "United Kingdom",
+  "product_points": 377,
+  "country_points": 604,
+  "frame_rows": 576,
+  "folds": {
+    "7": 2,
+    "30": 2,
+    "90": 2
+  },
+  "counters": {
+    "frames": 1293,
+    "fit_predict": 15,
+    "series_loads": 8
+  }
+}

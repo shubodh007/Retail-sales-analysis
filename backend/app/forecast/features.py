@@ -27,3 +27,29 @@ FEATURE_COLS = ([f"lag_{l}" for l in LAGS]
                 + [f"roll_mean_{w}" for w in ROLLING]
                 + [f"roll_std_{w}" for w in ROLLING]
                 + ["dow", "month", "is_weekend", "trend"])
+
+
+def next_feature_row(hist: list[float], date, trend_idx: int) -> dict:
+    """Single feature row for the timestep right after ``hist``.
+
+    Matches the last row ``build_frame(dates, y)`` would produce for the
+    same history: lags, rolling means, calendar parts and trend are
+    bit-identical; ``roll_std_*`` may differ by <= 1e-6 because pandas
+    accumulates float rounding over the full series vs the trailing slice
+    (verified: never flips a tree split — see tests/test_forecast_opt.py).
+    ``hist`` must hold >= max(LAGS) values (guaranteed: series gate is 60+).
+    """
+    n = len(hist)
+    row: dict = {f"lag_{lag}": float(hist[n - lag]) for lag in LAGS}
+    for w in ROLLING:
+        tail = pd.Series(hist[max(0, n - w):], dtype=float)
+        row[f"roll_mean_{w}"] = float(tail.rolling(w, min_periods=1).mean().iloc[-1])
+        row[f"roll_std_{w}"] = float(
+            tail.rolling(w, min_periods=1).std().fillna(0.0).iloc[-1])
+    ts = pd.to_datetime(date)
+    dow = int(ts.dayofweek)
+    row["dow"] = dow
+    row["month"] = int(ts.month)
+    row["is_weekend"] = int(dow >= 5)
+    row["trend"] = int(trend_idx)
+    return row

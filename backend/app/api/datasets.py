@@ -187,7 +187,15 @@ async def upload_dataset(
         parquet_path="",
     )
     session.add(dataset)
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        # Insert failure must release the slot and drop the staged file,
+        # or capacity/disk leak permanently (slots are few, disk is small).
+        await session.rollback()
+        csv_path.unlink(missing_ok=True)
+        slot.__exit__(None, None, None)
+        raise
     background.add_task(
         _ingest_and_release, slot,
         dataset_id=dataset_id, csv_path=str(csv_path), parquet_path=str(parquet_path),

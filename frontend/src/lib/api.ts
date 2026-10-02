@@ -161,7 +161,7 @@ export const api = {
       `/api/v1/analytics/geography?dataset_id=${id}`,
     ),
   fcCreate: (body: { dataset_id: string; target?: string; context_type: string; context_id?: string | null; horizon: number; models?: string[] | null }) =>
-    request<{ id: string; status: string }>('/api/v1/forecasts/runs', {
+    request<{ id: string; status: string; cached?: boolean }>('/api/v1/forecasts/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

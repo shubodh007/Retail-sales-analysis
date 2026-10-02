@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import jobs
@@ -41,12 +42,35 @@ def _train_and_release(slot: jobs.job_slot, **kwargs) -> None:
         slot.__exit__(None, None, None)
 
 
+def _inflight_filter(req: RunRequest):
+    """Match groups for the same forecast key still in flight."""
+    ctx = (ForecastGroup.context_id.is_(None) if req.context_id is None
+           else ForecastGroup.context_id == req.context_id)
+    return [ForecastGroup.dataset_id == req.dataset_id,
+            ForecastGroup.target == req.target,
+            ForecastGroup.context_type == req.context_type,
+            ctx,
+            ForecastGroup.horizon == req.horizon,
+            ForecastGroup.status.in_(["pending", "running"])]
+
+
+async def _find_inflight(session: AsyncSession, req: RunRequest):
+    rows = (await session.execute(
+        select(ForecastGroup).where(*_inflight_filter(req))
+        .order_by(ForecastGroup.created_at.desc()))).scalars().all()
+    return rows[0] if rows else None
+
+
 @router.post("/runs", status_code=202)
 async def create_run(req: RunRequest, background: BackgroundTasks,
                      session: AsyncSession = Depends(request_session)):
     ds = await session.get(Dataset, req.dataset_id)
     if ds is None:
         raise HTTPException(404, "dataset not found")
+    if ds.status != "ready":
+        # Datasets never mutate after ready, which is what makes the
+        # result cache below safe; refuse to train on incomplete data.
+        raise HTTPException(422, f"dataset is '{ds.status}'; forecast needs a ready dataset")
     if req.target != "revenue":
         raise HTTPException(422, "Phase 3 supports target=revenue only")
     if req.context_type not in ("global", "product", "country"):
@@ -63,19 +87,63 @@ async def create_run(req: RunRequest, background: BackgroundTasks,
         raise HTTPException(422, f"unknown models: {unknown}")
     if req.context_type != "global" and not req.context_id:
         raise HTTPException(422, "context_id required for product/country contexts")
+
+    # Identical-request cache + in-flight dedupe: a forecast is fully
+    # identified by (dataset, target, context, horizon, model set), and
+    # datasets are immutable once ready, so a completed group can be
+    # returned instead of retraining all four models.
+    inflight = await _find_inflight(session, req)
+    if inflight is not None:
+        return {"id": str(inflight.id), "status": inflight.status, "cached": False}
+    prior = (await session.execute(
+        select(ForecastGroup)
+        .where(ForecastGroup.dataset_id == req.dataset_id,
+               ForecastGroup.target == req.target,
+               ForecastGroup.context_type == req.context_type,
+               ForecastGroup.context_id.is_(None) if req.context_id is None
+               else ForecastGroup.context_id == req.context_id,
+               ForecastGroup.horizon == req.horizon,
+               ForecastGroup.status == "done")
+        .order_by(ForecastGroup.created_at.desc()))).scalars().all()
+    for g in prior:
+        done_models = sorted((await session.execute(
+            select(ForecastRun.model).where(
+                ForecastRun.group_id == g.id,
+                ForecastRun.status == "done"))).scalars().all())
+        if done_models == sorted(wanted):
+            return {"id": str(g.id), "status": "done", "cached": True}
+
     slot = jobs.acquire_or_429()  # 429 instead of silently overloading the box
     group = ForecastGroup(dataset_id=req.dataset_id, target=req.target,
                           context_type=req.context_type, context_id=req.context_id,
                           horizon=req.horizon, status="pending")
     session.add(group)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Lost a concurrent-insert race: the DB's partial unique index
+        # (uq_forecast_groups_inflight) admitted only one pending/running
+        # group per key. Release the slot and attach to the winner instead
+        # of training twice.
+        await session.rollback()
+        slot.__exit__(None, None, None)
+        winner = await _find_inflight(session, req)
+        if winner is not None:
+            return {"id": str(winner.id), "status": winner.status, "cached": False}
+        raise HTTPException(409, "duplicate forecast request in flight; retry shortly")
+    except Exception:
+        # Any other insert failure must also release the slot, or capacity
+        # leaks permanently (MAX_CONCURRENT_JOBS is tiny).
+        await session.rollback()
+        slot.__exit__(None, None, None)
+        raise
     await session.refresh(group)
     background.add_task(_train_and_release, slot, group_id=group.id,
                         dataset_id=req.dataset_id, target=req.target,
                         context_type=req.context_type, context_id=req.context_id,
                         horizon=req.horizon, models=wanted,
                         sync_url=_sync_url(session))
-    return {"id": str(group.id), "status": "pending"}
+    return {"id": str(group.id), "status": "pending", "cached": False}
 
 
 def _run_dto(run: ForecastRun, points: list[ForecastPoint]) -> dict:

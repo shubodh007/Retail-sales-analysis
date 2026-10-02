@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from app.forecast import metrics as M
-from app.forecast.features import FEATURE_COLS, build_frame
+from app.forecast.features import FEATURE_COLS, build_frame, next_feature_row
 from app.forecast.interface import ForecastResult
 from app.forecast.series import expanding_folds
 
@@ -55,6 +55,7 @@ def _run_arima(df: pd.DataFrame, horizon: int) -> ForecastResult:
     folds = expanding_folds(len(df), horizon)
     y = df["y"]
     fms, residuals = [], []
+    last_pred: list = []
     for tr, te in folds:
         res, _ = _fit_arima(y.iloc[list(tr)], horizon)
         pred = list(res.get_forecast(steps=len(te)).predicted_mean)
@@ -62,6 +63,7 @@ def _run_arima(df: pd.DataFrame, horizon: int) -> ForecastResult:
         m, _ = M.evaluate(actual, pred)
         fms.append(m)
         residuals += [a - p for a, p in zip(actual, pred)]
+        last_pred = pred  # last fold's predictions reused below — no refit
     res, cfg = _fit_arima(y, horizon)
     fc = res.get_forecast(steps=horizon)
     ci = fc.conf_int(alpha=0.05)
@@ -73,8 +75,7 @@ def _run_arima(df: pd.DataFrame, horizon: int) -> ForecastResult:
     r.val_dates = [d.strftime("%Y-%m-%d") for d in df["date"].iloc[list(folds[-1][1])]]
     last_fold = folds[-1]
     r.val_actual = list(y.iloc[list(last_fold[1])])
-    rr, _ = _fit_arima(y.iloc[list(last_fold[0])], horizon)
-    r.val_predicted = list(rr.get_forecast(steps=len(last_fold[1])).predicted_mean)
+    r.val_predicted = list(last_pred)  # computed in the folds loop above
     r.fc_dates = _future_dates(df["date"].iloc[-1], horizon)
     r.fc_points = [float(v) for v in fc.predicted_mean]
     r.fc_lower = [float(v) for v in ci.iloc[:, 0]]
@@ -109,6 +110,7 @@ def _run_prophet(df: pd.DataFrame, horizon: int) -> ForecastResult:
         mm, _ = M.evaluate(actual, pred)
         fms.append(mm)
         residuals += [a - p for a, p in zip(actual, pred)]
+        last_pred = pred  # last fold's predictions reused below — no refit
     m = _fit(df)
     fut = m.make_future_dataframe(periods=horizon, freq="D", include_history=False)
     fc = m.predict(fut)
@@ -120,9 +122,7 @@ def _run_prophet(df: pd.DataFrame, horizon: int) -> ForecastResult:
     last_fold = folds[-1]
     r.val_dates = [d.strftime("%Y-%m-%d") for d in df["date"].iloc[list(last_fold[1])]]
     r.val_actual = list(df["y"].iloc[list(last_fold[1])])
-    mm = _fit(df.iloc[list(last_fold[0])])
-    fut2 = mm.make_future_dataframe(periods=len(last_fold[1]), freq="D", include_history=False)
-    r.val_predicted = list(mm.predict(fut2)["yhat"])
+    r.val_predicted = list(last_pred)  # computed in the folds loop above
     r.fc_dates = [d.strftime("%Y-%m-%d") for d in fc["ds"]]
     r.fc_points = [float(v) for v in fc["yhat"]]
     r.fc_lower = [float(v) for v in fc["yhat_lower"]]
@@ -138,41 +138,49 @@ def _recursive_predict(model, hist: pd.DataFrame, horizon: int) -> list[float]:
 
     Each step appends its prediction to the history first, so lags and
     rolling windows for step t+1 see actuals plus predictions up to t.
-    The placeholder value for the not-yet-predicted point is never read by
-    its own feature row (every feature looks back >= 1 step).
+
+    Incremental: only the new timestep's feature row is computed (from a
+    trailing in-memory window), instead of rebuilding the full historical
+    feature frame on every step. Predictions are identical to the full
+    rebuild — same values, same order, same model input.
     """
     extended_y = list(hist["y"].astype(float))
     extended_d = list(pd.to_datetime(hist["date"]))
     out = []
     for _ in range(horizon):
-        extended_d.append(extended_d[-1] + pd.Timedelta(days=1))
-        extended_y.append(extended_y[-1])  # placeholder, never read by its own row
-        frame = build_frame(pd.Series(extended_d), pd.Series(extended_y))
-        pred = float(model.predict(frame[FEATURE_COLS].iloc[[-1]])[0])
+        nxt_d = extended_d[-1] + pd.Timedelta(days=1)
+        row = next_feature_row(extended_y, nxt_d, len(extended_y))
+        pred = float(model.predict(pd.DataFrame([row])[FEATURE_COLS])[0])
         out.append(pred)
-        extended_y[-1] = pred  # prediction feeds subsequent steps
+        extended_y.append(pred)
+        extended_d.append(nxt_d)
     return out
 
 
-def _run_ml(df: pd.DataFrame, horizon: int, kind: str) -> ForecastResult:
+def _run_ml(df: pd.DataFrame, horizon: int, kind: str, n_jobs: int = -1) -> ForecastResult:
     t0 = time.time()
     frame = build_frame(df["date"], df["y"])
     # map frame rows back to original positions: frame drops first 28 rows
     offset = len(df) - len(frame)
     folds = expanding_folds(len(df), horizon)
     fms, residuals = [], []
+    last_pred: list[float] = []
 
     def _fit(fr: pd.DataFrame):
         X, y = fr[FEATURE_COLS], fr["y"]
         if kind == "rf":
             from sklearn.ensemble import RandomForestRegressor
-            m = RandomForestRegressor(n_estimators=200, min_samples_leaf=5,
-                                      n_jobs=-1, random_state=42)
+            # 150 trees: full-validation WAPE within 0.3pp of 200 at h=30/90
+            # on UCI, ~25% faster fits (see docs/forecast-performance.md).
+            m = RandomForestRegressor(n_estimators=150, min_samples_leaf=5,
+                                      n_jobs=n_jobs, random_state=42)
         else:
             from xgboost import XGBRegressor
-            m = XGBRegressor(n_estimators=300, max_depth=6, learning_rate=0.05,
+            # 200 trees: within 0.4pp of 300 at h=30/90, ~2x faster at h=30,
+            # and avoids 300's h=90 regression (see docs/forecast-performance.md).
+            m = XGBRegressor(n_estimators=200, max_depth=6, learning_rate=0.05,
                              subsample=0.8, colsample_bytree=0.8,
-                             n_jobs=-1, random_state=42)
+                             n_jobs=n_jobs, random_state=42)
         m.fit(X, y)
         return m
 
@@ -186,23 +194,21 @@ def _run_ml(df: pd.DataFrame, horizon: int, kind: str) -> ForecastResult:
         mm, _ = M.evaluate(actual, pred)
         fms.append(mm)
         residuals += [a - p for a, p in zip(actual, pred)]
+        last_pred = pred  # last fold's predictions reused below — no refit
     m = _fit(frame)
     preds = _recursive_predict(m, df[["date", "y"]], horizon)
     lo, hi = _residual_band(residuals)
     avg, status = _avg_metrics(fms)
     cfg = {"features": FEATURE_COLS, "folds": len(folds),
            "interval": "empirical_residual_p10_p90",
-           "n_estimators": 200 if kind == "rf" else 300, "random_state": 42}
+           "n_estimators": 150 if kind == "rf" else 200, "random_state": 42}
     r = ForecastResult(model="rf" if kind == "rf" else "xgb", horizon=horizon,
                        metrics=avg, mape_status=status, interval_type="empirical_residual",
                        config=cfg, duration_s=time.time() - t0)
     last_fold = folds[-1]
     r.val_dates = [d.strftime("%Y-%m-%d") for d in df["date"].iloc[list(last_fold[1])]]
     r.val_actual = list(df["y"].iloc[list(last_fold[1])])
-    tri = [i - offset for i in last_fold[0] if i - offset >= 0]
-    mm = _fit(frame.iloc[tri])
-    r.val_predicted = _recursive_predict(mm, df.iloc[list(last_fold[0])][["date", "y"]],
-                                         len(last_fold[1]))
+    r.val_predicted = list(last_pred)  # computed in the folds loop above
     r.fc_dates = _future_dates(df["date"].iloc[-1], horizon)
     r.fc_points = preds
     r.fc_lower = [p + lo for p in preds]
@@ -213,11 +219,12 @@ def _run_ml(df: pd.DataFrame, horizon: int, kind: str) -> ForecastResult:
     return r
 
 
-def fit_predict(model: str, df: pd.DataFrame, horizon: int) -> ForecastResult:
+def fit_predict(model: str, df: pd.DataFrame, horizon: int,
+                n_jobs: int = -1) -> ForecastResult:
     if model == "arima":
         return _run_arima(df, horizon)
     if model == "prophet":
         return _run_prophet(df, horizon)
     if model in ("rf", "xgb"):
-        return _run_ml(df, horizon, model)
+        return _run_ml(df, horizon, model, n_jobs)
     raise ValueError(f"unknown model: {model}")

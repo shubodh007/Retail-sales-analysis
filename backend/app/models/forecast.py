@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Double, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Double, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,6 +11,15 @@ from app.db.session import Base
 
 class ForecastGroup(Base):
     __tablename__ = "forecast_groups"
+    # Single-flight guard (mirrored by migration f2c8d4e6a1b3 for existing
+    # databases): at most one pending/running group per forecast key, so two
+    # concurrent identical POSTs cannot both train. COALESCE because plain
+    # unique indexes treat NULL context_ids as distinct.
+    __table_args__ = (
+        Index("uq_forecast_groups_inflight", "dataset_id", "target", "context_type",
+              func.coalesce(text("context_id"), ""), "horizon", unique=True,
+              postgresql_where=text("status IN ('pending', 'running')")),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)

@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     max_forecast_horizon: int = 90
     max_concurrent_jobs: int = 2
 
+    # Models trained per forecast group run sequentially (1, the default) or
+    # across N threads. Raise ONLY on machines with headroom (4+ CPUs, 8GB+):
+    # each model still parallelizes internally, so workers > 1 multiplies
+    # CPU/memory pressure. Measured: on a small host workers=2 was SLOWER
+    # (25.8s vs ~22s sequential, global 30d). ARIMA/Prophet/RF are
+    # bit-identical either way; XGB can shift ~0.3pp WAPE (parallel histogram
+    # reduction) without changing selection — verified, see
+    # docs/forecast-performance.md.
+    forecast_max_workers: int = 1
+
     # Spark tuning. SPARK_MASTER="local[2]" caps cores on small containers.
     spark_master: str = "local[*]"
     spark_partitions: int = 8
