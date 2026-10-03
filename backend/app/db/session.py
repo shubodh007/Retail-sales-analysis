@@ -73,8 +73,14 @@ def normalize_sync_url(url: str) -> str:
 
 
 def sync_url_from_async(async_url: str) -> str:
-    """Derive the sync (psycopg2) URL for the bound async session URL."""
+    """Derive a psycopg2 URL from an asyncpg URL."""
     scheme, rest, query = _split_url(async_url)
+
+    # asyncpg uses `ssl`; psycopg2/libpq expects `sslmode`.
+    ssl = query.pop("ssl", None)
+    if ssl and "sslmode" not in query:
+        query["sslmode"] = ssl
+
     return normalize_sync_url(_join_url("postgresql", rest, query))
 
 
