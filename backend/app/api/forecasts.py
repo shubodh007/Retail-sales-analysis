@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import jobs
 from app.core.config import get_settings
-from app.db.session import request_session, sync_url_from_async
+from app.db.session import log_job_target, request_session, resolve_job_sync_url
 from app.forecast.estimators import MODELS
 from app.forecast.interface import InsufficientHistory
 from app.forecast.runner import train_group
@@ -32,7 +32,13 @@ class RunRequest(BaseModel):
 
 
 def _sync_url(session: AsyncSession) -> str:
-    return sync_url_from_async(str(session.get_bind().url))
+    url, _source = resolve_job_sync_url(session.get_bind().url)
+    return url
+
+
+def _sync_target(session: AsyncSession) -> tuple[str, str]:
+    """Return (sync_url, source) with safe-diagnostics source tracking."""
+    return resolve_job_sync_url(session.get_bind().url)
 
 
 def _train_and_release(slot: jobs.job_slot, **kwargs) -> None:
@@ -138,11 +144,13 @@ async def create_run(req: RunRequest, background: BackgroundTasks,
         slot.__exit__(None, None, None)
         raise
     await session.refresh(group)
+    sync_url, sync_source = _sync_target(session)
+    log_job_target(sync_source, sync_url, f"forecast-{group.id}")
     background.add_task(_train_and_release, slot, group_id=group.id,
                         dataset_id=req.dataset_id, target=req.target,
                         context_type=req.context_type, context_id=req.context_id,
                         horizon=req.horizon, models=wanted,
-                        sync_url=_sync_url(session))
+                        sync_url=sync_url)
     return {"id": str(group.id), "status": "pending", "cached": False}
 
 
@@ -218,7 +226,8 @@ async def fc_capabilities(dataset_id: uuid.UUID,
     for ctx, role in (("product", "products"), ("country", "geography")):
         info["contexts"][ctx] = {"supported": bool(have.get(role))}
     try:
-        df = load_series(ds.id, "global", None, horizon, _sync_url(session))
+        sync_url, sync_source = _sync_target(session)
+        df = load_series(ds.id, "global", None, horizon, sync_url, sync_source)
         info["global_points"] = len(df)
         info["history"] = {"from": df["date"].iloc[0].strftime("%Y-%m-%d"),
                            "to": df["date"].iloc[-1].strftime("%Y-%m-%d")}

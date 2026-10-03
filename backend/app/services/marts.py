@@ -4,27 +4,43 @@ Only file-backed Spark ops (see docs/java-spark-setup.md). Marts skipped
 when the dataset lacks the dimension (capability-driven, never fabricated).
 """
 import uuid
-from urllib.parse import parse_qsl, urlparse
 
 import psycopg2
 from pyspark.sql import functions as F
+from sqlalchemy.engine import make_url
 
+from app.db.session import log_job_target
 from app.services.mapping import detect_invoice_column
 from app.spark.session import get_spark
 
 
-def _targets(sync_url: str):
+def _targets(sync_url: str, source: str = "unknown"):
     """Split a SQLAlchemy sync URL (postgresql+psycopg2://...) into JDBC URL + psycopg2 kwargs.
 
     Forwards ``sslmode`` (required by Supabase) to both transports.
+    Uses SQLAlchemy's URL parser (handles percent-encoded passwords with
+    special chars); never silently falls back to user "postgres" — a
+    missing username is a configuration error that must fail fast with
+    safe diagnostics, not a misleading wrong-user auth failure.
     """
-    u = urlparse("postgresql://" + sync_url.split("://", 1)[1])
-    query = dict(parse_qsl(u.query))
-    jdbc = f"jdbc:postgresql://{u.hostname}:{u.port or 5432}{u.path}"
+    # Temporary safe diagnostics immediately before the failing connection.
+    log_job_target(source, sync_url, "marts-targets")
+    if ":***@" in sync_url:
+        raise ValueError(
+            f"refusing masked database URL from source={source}: password is '***'"
+        )
+    u = make_url(sync_url)
+    if not u.username:
+        raise ValueError(
+            f"database URL from source={source} has no username: "
+            "set DATABASE_URL with the Supabase pooler user postgres.<project>"
+        )
+    query = dict(u.query)
+    jdbc = f"jdbc:postgresql://{u.host}:{u.port or 5432}/{u.database}"
     if "sslmode" in query:
         jdbc += f"?sslmode={query['sslmode']}"
-    pg = {"host": u.hostname, "port": u.port or 5432, "user": u.username or "postgres",
-          "dbname": u.path.lstrip("/"), "connect_timeout": 10}
+    pg = {"host": u.host, "port": u.port or 5432, "user": u.username,
+          "dbname": u.database, "connect_timeout": 10}
     if u.password:
         pg["password"] = u.password
     if "sslmode" in query:
@@ -58,8 +74,8 @@ def _clear(dataset_id: uuid.UUID, tables: list[str], pg: dict) -> None:
 
 
 def build_marts(dataset_id: uuid.UUID, parquet_path: str, schema_map: dict[str, str],
-                sync_url: str) -> dict:
-    jdbc_url, pg = _targets(sync_url)
+                sync_url: str, source: str = "unknown") -> dict:
+    jdbc_url, pg = _targets(sync_url, source)
     spark = get_spark()
     df = spark.read.parquet(parquet_path)
     inv = detect_invoice_column(df.columns)

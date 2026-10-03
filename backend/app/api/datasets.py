@@ -23,7 +23,12 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core import jobs
 from app.core.config import get_settings
-from app.db.session import make_job_engine, request_session, sync_url_from_async
+from app.db.session import (
+    log_job_target,
+    make_job_engine,
+    request_session,
+    resolve_job_sync_url,
+)
 from app.models.dataset import Dataset
 from app.schemas.dataset import DatasetOut, DatasetProfileOut, DatasetStatusOut
 from app.services import mapping as mapping_svc
@@ -71,9 +76,13 @@ def _stage_paths(dataset_id: uuid.UUID, filename: str):
 
 
 def _ingest_dataset(dataset_id: uuid.UUID, csv_path: str, parquet_path: str,
-                    role_to_column: dict, filename: str, sync_url: str) -> None:
+                    role_to_column: dict, filename: str, sync_url: str,
+                    sync_source: str = "unknown") -> None:
     """Background worker: Spark profile -> Parquet -> marts -> anomalies."""
-    engine = make_job_engine(sync_url)
+    # Temporary safe diagnostics immediately before the failing connection:
+    # source var name + parsed user/host/port/db/driver only, never secrets.
+    log_job_target(sync_source, sync_url, f"ingest-{dataset_id}")
+    engine = make_job_engine(sync_url, source=sync_source)
     Session = sessionmaker(engine, expire_on_commit=False)
     session = Session()
     t0 = datetime.now(timezone.utc)
@@ -98,9 +107,10 @@ def _ingest_dataset(dataset_id: uuid.UUID, csv_path: str, parquet_path: str,
         flag_modified(dataset, "profile")
         session.commit()
 
-        mart_counts = build_marts(dataset_id, parquet_path, role_to_column, sync_url)
+        mart_counts = build_marts(dataset_id, parquet_path, role_to_column, sync_url,
+                                  source=sync_source)
         profile["marts"] = mart_counts
-        anomaly_counts = build_anomalies(dataset_id, sync_url)
+        anomaly_counts = build_anomalies(dataset_id, sync_url, source=sync_source)
         profile["anomalies"] = anomaly_counts
         dataset.profile = dict(profile)
         dataset.status = "ready"
@@ -196,13 +206,19 @@ async def upload_dataset(
         csv_path.unlink(missing_ok=True)
         slot.__exit__(None, None, None)
         raise
+    # Background sync workers (psycopg2/JDBC) must use DATABASE_URL
+    # (session pooler 5432 in prod). Never str(bind.url): SQLAlchemy 2.x
+    # masks the password to '***', which Supabase reports as auth failure
+    # for user "postgres" even though env vars hold postgres.<project>.
+    # resolve_job_sync_url preserves test isolation (bind test DB) and
+    # tracks the source var name for safe diagnostics.
+    sync_url, sync_source = resolve_job_sync_url(session.get_bind().url)
+    log_job_target(sync_source, sync_url, f"upload-{dataset_id}")
     background.add_task(
         _ingest_and_release, slot,
         dataset_id=dataset_id, csv_path=str(csv_path), parquet_path=str(parquet_path),
         role_to_column=dict(detected.role_to_column), filename=dataset.filename,
-        # Same database the request session is bound to (prod or test),
-        # never a hardcoded URL.
-        sync_url=sync_url_from_async(str(session.get_bind().url)),
+        sync_url=sync_url, sync_source=sync_source,
     )
     log.info("upload %s queued: %s (%s bytes)", dataset_id, dataset.filename, size)
     return {"id": str(dataset_id), "status": "queued"}

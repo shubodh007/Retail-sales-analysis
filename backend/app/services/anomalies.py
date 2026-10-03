@@ -53,8 +53,13 @@ def _series(engine, dataset_id: uuid.UUID, table: str, key_col: str | None,
         return pd.read_sql(text(q), conn, params=params, parse_dates=["date"])
 
 
-def build_anomalies(dataset_id: uuid.UUID, sync_url: str, top_products: int = 200) -> dict:
-    engine = make_job_engine(sync_url)
+def build_anomalies(dataset_id: uuid.UUID, sync_url: str, top_products: int = 200,
+                    source: str = "unknown") -> dict:
+    from app.db.session import log_job_target
+
+    # Temporary safe diagnostics immediately before the failing connection.
+    log_job_target(source, sync_url, f"anomalies-{dataset_id}")
+    engine = make_job_engine(sync_url, source=source)
     rows: list[dict] = []
     skipped_sparse = 0
 
@@ -95,16 +100,26 @@ def build_anomalies(dataset_id: uuid.UUID, sync_url: str, top_products: int = 20
             harvest("product", p, df)
 
     import psycopg2
-    from urllib.parse import parse_qsl, urlparse
-    u = urlparse("postgresql://" + sync_url.split("://", 1)[1])
-    query = dict(parse_qsl(u.query))
-    kwargs: dict = {"host": u.hostname, "port": u.port or 5432,
-                    "user": u.username or "postgres",
-                    "dbname": u.path.lstrip("/"), "connect_timeout": 10}
+    from sqlalchemy.engine import make_url
+    if ":***@" in sync_url:
+        raise ValueError(
+            f"refusing masked database URL from source={source}: password is '***'"
+        )
+    u = make_url(sync_url)
+    if not u.username:
+        raise ValueError(
+            f"database URL from source={source} has no username: "
+            "set DATABASE_URL with the Supabase pooler user postgres.<project>"
+        )
+    query = dict(u.query)
+    kwargs: dict = {"host": u.host, "port": u.port or 5432,
+                    "user": u.username,
+                    "dbname": u.database, "connect_timeout": 10}
     if u.password:
         kwargs["password"] = u.password
     if "sslmode" in query:  # Supabase mandates TLS
         kwargs["sslmode"] = query["sslmode"]
+    log_job_target(source, sync_url, f"anomalies-psycopg2-{dataset_id}")
     conn = psycopg2.connect(**kwargs)
     conn.autocommit = True
     with conn.cursor() as cur:

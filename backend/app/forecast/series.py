@@ -13,12 +13,16 @@ from app.db.session import make_job_engine
 from app.forecast.interface import InsufficientHistory
 
 
-def _engine(sync_url: str | None = None):
-    return make_job_engine(sync_url or get_settings().database_url)
+def _engine(sync_url: str | None = None, source: str = "unknown"):
+    from app.db.session import log_job_target
+    url = sync_url or get_settings().database_url
+    log_job_target(source if sync_url else "DATABASE_URL", url, "forecast-series")
+    return make_job_engine(url, source=source if sync_url else "DATABASE_URL")
 
 
 def load_series(dataset_id: uuid.UUID, context_type: str, context_id: str | None,
-                horizon: int, sync_url: str | None = None) -> pd.DataFrame:
+                horizon: int, sync_url: str | None = None,
+                source: str = "unknown") -> pd.DataFrame:
     if context_type == "global":
         sql = ("SELECT date, revenue AS y FROM sales_daily WHERE dataset_id=:d ORDER BY date")
         params: dict = {"d": str(dataset_id)}
@@ -32,7 +36,7 @@ def load_series(dataset_id: uuid.UUID, context_type: str, context_id: str | None
         params = {"d": str(dataset_id), "c": context_id}
     else:
         raise ValueError(f"unknown context: {context_type}")
-    with _engine(sync_url).connect() as conn:
+    with _engine(sync_url, source).connect() as conn:
         df = pd.read_sql(text(sql), conn, params=params, parse_dates=["date"])
     if df.empty:
         raise InsufficientHistory(f"no history for {context_type}={context_id}")

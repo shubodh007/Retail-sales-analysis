@@ -20,15 +20,18 @@ from app.forecast.interface import InsufficientHistory
 from app.models.forecast import ForecastGroup, ForecastPoint, ForecastRun
 
 
-def _sync_session(sync_url: str):
-    engine = make_job_engine(sync_url)
+def _sync_session(sync_url: str, source: str = "unknown"):
+    from app.db.session import log_job_target
+    log_job_target(source, sync_url, "forecast-session")
+    engine = make_job_engine(sync_url, source=source)
     return sessionmaker(engine, expire_on_commit=False)
 
 
 def _train_single_model(group_id: uuid.UUID, model: str, df, hist: list[dict],
-                        horizon: int, n_jobs: int, sync_url: str):
+                        horizon: int, n_jobs: int, sync_url: str,
+                        source: str = "unknown"):
     """Train one model end-to-end (own session). Returns the ForecastResult."""
-    Session = _sync_session(sync_url)
+    Session = _sync_session(sync_url, source)
     session = Session()
     try:
         run = ForecastRun(group_id=group_id, model=model, status="running")
@@ -72,17 +75,17 @@ def _train_single_model(group_id: uuid.UUID, model: str, df, hist: list[dict],
 
 def train_group(group_id: uuid.UUID, dataset_id: uuid.UUID, target: str,
                 context_type: str, context_id: str | None, horizon: int,
-                models: list[str], sync_url: str) -> None:
+                models: list[str], sync_url: str, source: str = "unknown") -> None:
     from app.forecast.series import load_series
 
-    Session = _sync_session(sync_url)
+    Session = _sync_session(sync_url, source)
     session = Session()
     try:
         group = session.get(ForecastGroup, group_id)
         group.status = "running"
         session.commit()
         try:
-            df = load_series(dataset_id, context_type, context_id, horizon, sync_url)
+            df = load_series(dataset_id, context_type, context_id, horizon, sync_url, source)
         except InsufficientHistory as e:
             group.status = "failed"
             group.error = str(e)
@@ -102,14 +105,14 @@ def train_group(group_id: uuid.UUID, dataset_id: uuid.UUID, target: str,
     results: dict = {}
     if workers == 1:
         for name in models:
-            res = _train_single_model(group_id, name, df, hist, horizon, n_jobs, sync_url)
+            res = _train_single_model(group_id, name, df, hist, horizon, n_jobs, sync_url, source)
             if res is not None:
                 results[name] = res
     else:
         with ThreadPoolExecutor(max_workers=workers,
                                 thread_name_prefix="forecast") as pool:
             futs = {pool.submit(_train_single_model, group_id, name, df, hist,
-                                horizon, n_jobs, sync_url): name for name in models}
+                                horizon, n_jobs, sync_url, source): name for name in models}
             for fut in futs:
                 res = fut.result()
                 if res is not None:
