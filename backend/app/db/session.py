@@ -137,6 +137,10 @@ async def check_db() -> bool:
             await session.execute(text("SELECT 1"))
         return True
     except Exception:
+        import logging
+        logging.getLogger("retail-intelligence").exception(
+            "Async database health check failed"
+        )
         return False
 
 
