@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+# Parquet lake + uploads (never commit data)
+backend/data_lake/
+backend/uploads/
+*.parquet
+# Raw source datasets (large; documented, re-downloadable — keep to_csv.py + docs)
+datasets/raw/*
+!datasets/raw/to_csv.py
+# Env
+.env
+.env.*
+!.env.example
+# Node
+node_modules/
+frontend/dist/
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Java/Spark
+derby.log
+metastore_db/
+spark-warehouse/
+# Local portable toolchain (re-downloaded via docs; never commit binaries)
+.tools/
+!.tools/README.md
